@@ -1,71 +1,50 @@
-FROM alpine:3.2
-MAINTAINER Rohit Ghatol
+FROM buildpack-deps:jessie-scm
 
-# Install cURL
-RUN apk --update add curl ca-certificates tar && \
-    curl -Ls https://circle-artifacts.com/gh/andyshinn/alpine-pkg-glibc/6/artifacts/0/home/ubuntu/alpine-pkg-glibc/packages/x86_64/glibc-2.21-r2.apk > /tmp/glibc-2.21-r2.apk && \
-    apk add --allow-untrusted /tmp/glibc-2.21-r2.apk
+# A few problems with compiling Java from source:
+#  1. Oracle.  Licensing prevents us from redistributing the official JDK.
+#  2. Compiling OpenJDK also requires the JDK to be installed, and it gets
+#       really hairy.
 
-# Java Version
-ENV JAVA_VERSION_MAJOR 8
-ENV JAVA_VERSION_MINOR 60
-ENV JAVA_VERSION_BUILD 27
-ENV JAVA_PACKAGE       jre
+RUN apt-get update && apt-get install -y --no-install-recommends \
+		bzip2 \
+		unzip \
+		xz-utils \
+	&& rm -rf /var/lib/apt/lists/*
 
+RUN echo 'deb http://deb.debian.org/debian jessie-backports main' > /etc/apt/sources.list.d/jessie-backports.list
 
-# Download and unarchive Java
-RUN mkdir /opt && curl -jksSLH "Cookie: oraclelicense=accept-securebackup-cookie"\
-  http://download.oracle.com/otn-pub/java/jdk/${JAVA_VERSION_MAJOR}u${JAVA_VERSION_MINOR}-b${JAVA_VERSION_BUILD}/${JAVA_PACKAGE}-${JAVA_VERSION_MAJOR}u${JAVA_VERSION_MINOR}-linux-x64.tar.gz \
-    | tar -xzf - -C /opt &&\
-    ln -s /opt/${JAVA_PACKAGE}1.${JAVA_VERSION_MAJOR}.0_${JAVA_VERSION_MINOR} /opt/${JAVA_PACKAGE} &&\
-    rm -rf /opt/${JAVA_PACKAGE}/*src.zip \
-           /opt/${JAVA_PACKAGE}/lib/missioncontrol \
-           /opt/${JAVA_PACKAGE}/lib/visualvm \
-           /opt/${JAVA_PACKAGE}/lib/*javafx* \
-           /opt/${JAVA_PACKAGE}/jre/lib/plugin.jar \
-           /opt/${JAVA_PACKAGE}/jre/lib/ext/jfxrt.jar \
-           /opt/${JAVA_PACKAGE}/jre/bin/javaws \
-           /opt/${JAVA_PACKAGE}/jre/lib/javaws.jar \
-           /opt/${JAVA_PACKAGE}/jre/lib/desktop \
-           /opt/${JAVA_PACKAGE}/jre/plugin \
-           /opt/${JAVA_PACKAGE}/jre/lib/deploy* \
-           /opt/${JAVA_PACKAGE}/jre/lib/*javafx* \
-           /opt/${JAVA_PACKAGE}/jre/lib/*jfx* \
-           /opt/${JAVA_PACKAGE}/jre/lib/amd64/libdecora_sse.so \
-           /opt/${JAVA_PACKAGE}/jre/lib/amd64/libprism_*.so \
-           /opt/${JAVA_PACKAGE}/jre/lib/amd64/libfxplugins.so \
-           /opt/${JAVA_PACKAGE}/jre/lib/amd64/libglass.so \
-           /opt/${JAVA_PACKAGE}/jre/lib/amd64/libgstreamer-lite.so \
-           /opt/${JAVA_PACKAGE}/jre/lib/amd64/libjavafx*.so \
-           /opt/${JAVA_PACKAGE}/jre/lib/amd64/libjfx*.so \
-           /opt/${JAVA_PACKAGE}/lib/plugin.jar \
-           /opt/${JAVA_PACKAGE}/lib/ext/jfxrt.jar \
-           /opt/${JAVA_PACKAGE}/bin/javaws \
-           /opt/${JAVA_PACKAGE}/lib/javaws.jar \
-           /opt/${JAVA_PACKAGE}/lib/desktop \
-           /opt/${JAVA_PACKAGE}/plugin \
-           /opt/${JAVA_PACKAGE}/lib/deploy* \
-           /opt/${JAVA_PACKAGE}/lib/*javafx* \
-           /opt/${JAVA_PACKAGE}/lib/*jfx* \
-           /opt/${JAVA_PACKAGE}/lib/amd64/libdecora_sse.so \
-           /opt/${JAVA_PACKAGE}/lib/amd64/libprism_*.so \
-           /opt/${JAVA_PACKAGE}/lib/amd64/libfxplugins.so \
-           /opt/${JAVA_PACKAGE}/lib/amd64/libglass.so \
-           /opt/${JAVA_PACKAGE}/lib/amd64/libgstreamer-lite.so \
-           /opt/${JAVA_PACKAGE}/lib/amd64/libjavafx*.so \
-           /opt/${JAVA_PACKAGE}/lib/amd64/libjfx*.so
+# Default to UTF-8 file.encoding
+ENV LANG C.UTF-8
 
+# add a simple script that can auto-detect the appropriate JAVA_HOME value
+# based on whether the JDK or only the JRE is installed
+RUN { \
+		echo '#!/bin/sh'; \
+		echo 'set -e'; \
+		echo; \
+		echo 'dirname "$(dirname "$(readlink -f "$(which javac || which java)")")"'; \
+	} > /usr/local/bin/docker-java-home \
+	&& chmod +x /usr/local/bin/docker-java-home
 
+ENV JAVA_HOME /usr/lib/jvm/java-8-openjdk-amd64
 
-# Fix DNS resolution issues when nss is not installed
-RUN echo 'hosts: files mdns4_minimal [NOTFOUND=return] dns mdns4' >> /etc/nsswitch.conf
+ENV JAVA_VERSION 8u111
+ENV JAVA_DEBIAN_VERSION 8u111-b14-2~bpo8+1
 
-# Set DNS cache to 10 seconds (Cache is permanent by default). Network hosts are volatile in Docker clusters.
-RUN grep '^networkaddress.cache.ttl=' /opt/${JAVA_PACKAGE}/lib/security/java.security || echo 'networkaddress.cache.ttl=10' >> /opt/${JAVA_PACKAGE}/lib/security/java.security
+# see https://bugs.debian.org/775775
+# and https://github.com/docker-library/java/issues/19#issuecomment-70546872
+ENV CA_CERTIFICATES_JAVA_VERSION 20140324
 
+RUN set -x \
+	&& apt-get update \
+	&& apt-get install -y \
+		openjdk-8-jdk="$JAVA_DEBIAN_VERSION" \
+		ca-certificates-java="$CA_CERTIFICATES_JAVA_VERSION" \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& [ "$JAVA_HOME" = "$(docker-java-home)" ]
 
-# Set environment
-ENV JAVA_HOME /opt/${JAVA_PACKAGE}
-ENV PATH ${PATH}:${JAVA_HOME}/bin
+# see CA_CERTIFICATES_JAVA_VERSION notes above
+RUN /var/lib/dpkg/info/ca-certificates-java.postinst configure
 
-CMD java -version
+# If you're reading this and have any feedback on how this image could be
+#   improved, please open an issue or a pull request so we can discuss it!
